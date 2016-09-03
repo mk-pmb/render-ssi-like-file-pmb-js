@@ -1,0 +1,37 @@
+{ "name": "render-ssi-like-file-pmb",
+  "version": "0.0.1",
+  "description": "Replace SSI-style command tags in a text (file).",
+  "keywords": [],
+
+  "author": "M.K. (https://github.com/mk-pmb)",
+  "homepage": "https://github.com/mk-pmb/render-ssi-like-file-pmb-js#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mk-pmb/render-ssi-like-file-pmb-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mk-pmb/render-ssi-like-file-pmb-js/issues"
+  },
+
+  "private": false, "license": "ISC",
+
+  "main": "rssi.js",
+  "scripts": { "test": "bash test/test_all.sh" },
+  "directories": {
+    "doc": "doc",
+    "test": "test"
+  },
+
+  "dependencies": {
+    "readfile-cache-pmb": "^0.1.1"
+  },
+  "devDependencies": {
+    "lib-demo-util-160404": "^0.1.0"
+  },
+  "optionalDependencies": {}, "peerDependencies": {}, "bundledDependencies": [],
+  "browserify": { "transform": [ "brfs" ] },
+  "engines": { "npm": "*", "node": "*" }, "os": [], "cpu": [],
+
+
+  "npm vs. BOM = Unexpected token": "-*- coding: UTF-8 -*-"
+}
