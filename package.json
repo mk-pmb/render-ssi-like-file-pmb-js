@@ -23,7 +23,9 @@
   },
 
   "dependencies": {
-    "readfile-cache-pmb": "^0.1.1"
+    "readfile-cache-pmb": "^0.1.1",
+    "string-peeks": "^0.0.2",
+    "xmlattrdict": "^0.1.5"
   },
   "devDependencies": {
     "lib-demo-util-160404": "^0.1.0"
