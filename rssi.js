@@ -7,7 +7,7 @@ var CF, PT, noOp = Boolean.bind(null, false),
   flexiTimeout = require('callback-timeout-flexible'),
   readFileCached = require('readfile-cache-pmb'),
   StringPeeks = require('string-peeks'),
-  xmlAttrDict = require('xmlattrdict');
+  XmlTag = require('xmlattrdict/xmltag');
 
 
 CF = function ReadmeSSI(opts) {
@@ -15,7 +15,6 @@ CF = function ReadmeSSI(opts) {
   this.commands = Object.assign({}, PT.commands);
   Object.assign(this, opts);
   if (!this.readFile) { this.readFile = readFileCached.rf(); }
-  this.debugLog = CF.configureDebugLog(this.debugLog);
 };
 PT = CF.prototype;
 
@@ -37,21 +36,7 @@ PT.commands = {       // template for the constructor's independent copy
 };
 
 
-PT.logWarn = function (msg) {
-  if ((arguments.length > 1) || ((typeof msg) !== 'string')) {
-    msg = Array.prototype.slice.call(arguments);
-  }
-  console.error('W:', String(this), msg);
-};
-
-
-CF.configureDebugLog = function (dl) {
-  if (!dl) { return noOp; }
-  if ((typeof dl) === 'function') { return dl; }
-  if (dl === true) { dl = 'D:'; }
-  dl = String(dl);
-  return console.error.bind(console, dl);
-};
+PT.log = function (level, event, detail) { return [level, event, detail]; };
 
 
 CF.checkMissingCallback = function (func) {
@@ -71,7 +56,7 @@ CF.throwIfTruthy = function (err) { if (err) { throw err; } };
 
 CF.normalizeWhitespace = function (text) {
   return String(text).replace(/^[ \t\r]+(\n)/g, '$1'
-    ).replace(/[\s\n]*$/, '\n');
+    ).replace(/\s*$/, '\n');
 };
 
 
@@ -89,7 +74,21 @@ PT.setSourceText = function (text) {
     break;
   }
   this.segments = [text];
+  this.log('D', 'setSourceTextOk', [text.slice(0, 128), text.length]);
   return this;
+};
+
+
+PT.recvSourceText = function (next, fetchErr, text) {
+  this.log('D', 'recvSourceText', [fetchErr, text && text.length]);
+  CF.checkMissingCallback(next);
+  if (fetchErr) { return next(fetchErr); }
+  try {
+    this.setSourceText(text);
+  } catch (setTextErr) {
+    return next(setTextErr);
+  }
+  return next(null);
 };
 
 
@@ -108,54 +107,44 @@ CF.tagToString = function (tag) {
 };
 
 
-CF.tagErr = function (tag, err, cb) {
-  err = new Error(CF.tagToString(tag || this) + ': ' + err);
-  if ((typeof cb) === 'function') { return cb(err); }
-  throw err;
-};
-
-
 PT.readFileRel = function (relFn, encoding, deliver) {
   if (!this.filename) {
     relFn = 'Cannot resolve relative path without source filename: ' + relFn;
     return deliver(new Error(relFn), null);
   }
   var absFn = resolveRelativePath(this.filename, '..', relFn);
+  this.log('D', 'readFileRel:resolve', [relFn, absFn]);
   return this.readFile(absFn, encoding, deliver);
 };
 
 
-PT.render = function (whenRendered) {
-  var self = this;
+PT.render = function (whenRendered, err) {
+  var retryRender = this.render.bind(this, whenRendered);
   CF.checkMissingCallback(whenRendered);
-  if (!self.segments) {
-    self.segments = [];     // prevent infinite recursion
-    if (self.filename) {
-      self.readFile(self.filename, self.encoding, function (err, text) {
-        if (err) { return whenRendered(err); }
-        try {
-          self.setSourceText(text);
-        } catch (setTextErr) {
-          return whenRendered(setTextErr, self);
-        }
-        return self.render(whenRendered);
-      });
+  if (err) { return whenRendered(err); }
+  if (!this.segments) {
+    this.segments = [];     // prevent infinite recursion
+    this.log('D', 'render:segments:init');
+    if (this.filename) {
+      this.log('D', 'render:segments:readFile');
+      this.readFile(this.filename, this.encoding,
+        this.recvSourceText.bind(this, retryRender));
       return;
     }
   }
-  if (!self.pendingInserts) {
+  if (!this.pendingInserts) {
     try {
-      self.tokenize();
+      this.tokenize();
     } catch (tokenizeErr) {
-      return whenRendered(tokenizeErr, self);
+      return whenRendered(tokenizeErr, this);
     }
-    self.fetchPendingInserts(self.render.bind(self, whenRendered));
+    this.fetchPendingInserts(retryRender);
     return;
   }
-  if (Object.keys(self.pendingInserts).length) {
+  if (Object.keys(this.pendingInserts).length) {
     throw new Error('Cannot render() while there are still pendingInserts!');
   }
-  return whenRendered(null, self);
+  return whenRendered(null, this);
 };
 
 
@@ -200,14 +189,13 @@ PT.tokenizeMaybeTag = function (buf, seg) {
     }
     tag = tag.slice(0, -tagSuffix.length);
   }
-  if ((typeof tag) === 'string') { tag = new xmlAttrDict.XmlTag(tag); }
+  if ((typeof tag) === 'string') { tag = new XmlTag(tag); }
   if (tagPrefix) {
     if (!tag.tagName.startsWith(tagPrefix)) { return buf.eat(); }
     tag.cmdName = tag.tagName.slice(tagPrefix.length);
   }
   tag.srcPos = buf.calcPosLnChar();
   tag.toString = CF.tagToString;
-  tag.err = CF.tagErr.bind(null, tag);
   tag.origText = buf.eat();
   return tag;
 };
@@ -263,8 +251,8 @@ PT.fetchPendingInserts = function (whenFetched) {
   rcv = function (idx, err, text) {
     var fetcher = pend[idx], tag;
     if (!fetcher) {
-      return this.logWarn('Fetcher delivered results for insert #' + idx +
-        ' which is not currently pending.', err, text);
+      this.log('W', 'inserts:received_nonpending', [err, text]);
+      return;
     }
     if (err) {
       self.segments[idx] = err;
@@ -346,7 +334,6 @@ CF.rejectLeftoverAttrs = function (text, tag) {
   if (arguments.length === 1) { tag = text; }
   var leftover = Object.keys(tag.attrs);
   if (leftover.length === 0) { return text; }
-  // leftover = xmlAttrDict.quotedList(leftover);
   leftover = CF.oneLineJSONify(tag.attrs);
   return tag.err('leftover attributes: ' + leftover);
 };
