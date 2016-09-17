@@ -229,7 +229,7 @@ PT.foundTag = function (tag, buf) {
     val.tag = tag;
     return val;
   }
-  return tag.err('Unsupported return value from command handler: ' + val);
+  throw tag.err('Unsupported return value from command handler: ' + val);
 };
 
 
@@ -335,7 +335,7 @@ CF.rejectLeftoverAttrs = function (text, tag) {
   var leftover = Object.keys(tag.attrs);
   if (leftover.length === 0) { return text; }
   leftover = CF.oneLineJSONify(tag.attrs);
-  return tag.err('leftover attributes: ' + leftover);
+  throw tag.err('leftover attributes: ' + leftover);
 };
 
 
