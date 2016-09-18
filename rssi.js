@@ -60,6 +60,32 @@ CF.normalizeWhitespace = function (text) {
 };
 
 
+CF.tagToString = function (tag) {
+  if (!tag) { tag = this; }
+  return ((tag.cmdName ? 'cmd "' + tag.cmdName + '"'
+    : 'tag <' + tag.tagName + '>') + ' @ ' + tag.srcPos.fmt());
+};
+
+
+CF.describe = function (x) {
+  var d = (x && typeof x);
+  switch (d) {
+  case '':
+  case 'string':
+    return JSON.stringify(x);
+  case 'object':
+    d = String(x);
+    try {
+      d += ' ' + JSON.stringify(x);
+    } catch (jsonifyErr) {
+      d += ' ?? ' + String(jsonifyErr);
+    }
+    return d;
+  }
+  return String(x);
+};
+
+
 PT.setSourceText = function (text) {
   if (this.checkHasMagicTokens()) {
     throw new Error('Cannot set source: already tokenized');
@@ -97,13 +123,6 @@ PT.checkHasMagicTokens = function () {
   if ((seg.length || 0) < 1) { return false; }
   if ((seg.length === 1) && ((typeof seg[0]) === 'string')) { return false; }
   return true;
-};
-
-
-CF.tagToString = function (tag) {
-  if (!tag) { tag = this; }
-  return ((tag.cmdName ? 'cmd "' + tag.cmdName + '"'
-    : 'tag <' + tag.tagName + '>') + ' @ ' + tag.srcPos.fmt());
 };
 
 
@@ -160,8 +179,10 @@ PT.tokenize = function () {
       tag = self.tokenizeMaybeTag(buf, seg);
       if (tag) {
         tag = self.foundTag(tag, buf);
-        if ((typeof tag) === 'function') {
+        switch (tag && (typeof tag) && tag.insertType) {
+        case 'fetcher':
           self.pendingInserts[seg.length] = tag;
+          break;
         }
         seg[seg.length] = tag;
       }
@@ -221,13 +242,7 @@ PT.foundTag = function (tag, buf) {
   case 'string':
     return val;
   case 'function':
-    val = flexiTimeout(val, {
-      limitSec: (val.fetchTimeoutSec || this.defaultFetchTimeoutSec),
-      name: 'content fetcher for ' + String(tag),
-      errMsg: 'No feedback from \v{name}',
-    });
-    val.tag = tag;
-    return val;
+    return { insertType: 'fetcher', fetcher: val, tag: tag };
   }
   throw tag.err('Unsupported return value from command handler: ' + val);
 };
@@ -242,50 +257,69 @@ PT.applyCmdFunc = function (func, val, tag, buf, meta) {
 };
 
 
-PT.fetchPendingInserts = function (whenFetched) {
-  var self = this, pend = self.pendingInserts, fails = self.failedInserts,
-    todo, rcv;
-  if (!fails) { fails = self.failedInserts = {}; }
-  todo = Object.keys(pend);
-  if (todo.length < 1) { return whenFetched(null, self); }
-  rcv = function (idx, err, text) {
-    var fetcher = pend[idx], tag;
-    if (!fetcher) {
-      this.log('W', 'inserts:received_nonpending', [err, text]);
-      return;
-    }
-    if (err) {
-      self.segments[idx] = err;
-      fails[idx] = { fetcher: fetcher, err: err };
-    } else {
-      tag = (fetcher.tag || false);
-      if (tag.filterFetchedText) { text = tag.filterFetchedText(text); }
-      self.segments[idx] = text;
-    }
-    delete pend[idx];
-    if (Object.keys(pend).length > 0) { return; }
-    if (Object.keys(fails).length > 0) {
-      err = new Error('Errors in deferred rendering, see .failedInserts');
-      err.failedInserts = fails;
-      return whenFetched(err);
-    }
-    return whenFetched(null, self);
-  };
-  todo.forEach(function (idx) {
-    self.fetchOneInsert(pend[idx],
-      function ReadmeSSI_hasOneInsert(err, data) { rcv(idx, err, data); });
-  });
+PT.fetchPendingInserts = function (whenAllFetched) {
+  var self = this, todo = Object.keys(self.pendingInserts), recvOneSeg;
+  if (!self.failedInserts) { self.failedInserts = {}; }
+  if (todo.length < 1) { return whenAllFetched(null, self); }
+  recvOneSeg = this.receiveFetchedSegment.bind(this, whenAllFetched);
+  try {
+    todo = todo.map(this.prepareFetchOneInsert.bind(this, recvOneSeg));
+  } catch (prepErr) {
+    prepErr.message = 'Failed to start deferred rendering: ' + prepErr.message;
+    return whenAllFetched(prepErr);
+  }
+  todo.forEach(function (how) { how(); });
 };
 
 
-PT.fetchOneInsert = function (ins, whenReceived) {
-  switch (typeof ins) {
-  case 'function':
-    return setImmediate(function fetchOneInsert_proxy() {
-      return ins(whenReceived);
-    });
+PT.prepareFetchOneInsert = function (rcv, idx) {
+  var pend = this.pendingInserts, ins = pend[idx],
+    how = 'fetchOneInsert_' + ins.insertType, proxy;
+  how = (this[how] || how);
+  this.log('D', 'fetchPendingInserts:prepareTodo', [idx, ins, how]);
+  if ((typeof how) === 'function') {
+    proxy = function ReadmeSSI_hasOneInsert(err, tx) { rcv(idx, err, tx); };
+    return how.bind(this, ins, proxy, idx);
   }
-  return whenReceived(new Error('unsupported insert type'));
+  throw new Error('unsupported insert type: ' + CF.describe(ins));
+};
+
+
+PT.receiveFetchedSegment = function (whenAllFetched, idx, err, text) {
+  var fetcher = this.pendingInserts[idx], tag;
+  if (!fetcher) {
+    this.log('W', 'inserts:received_nonpending', [idx, err, text]);
+    return;
+  }
+  if (err) {
+    this.segments[idx] = err;
+    this.failedInserts[idx] = { fetcher: fetcher, err: err };
+  } else {
+    tag = (fetcher.tag || false);
+    if (tag.filterFetchedText) { text = tag.filterFetchedText(text); }
+    this.segments[idx] = text;
+  }
+  delete this.pendingInserts[idx];
+  if (Object.keys(this.pendingInserts).length > 0) { return; }
+  if (Object.keys(this.failedInserts).length > 0) {
+    err = new Error('Errors in deferred rendering, see .failedInserts.'
+      + ' One of them: ' + String(err.message || err));
+    err.failedInserts = this.failedInserts;
+    return whenAllFetched(err, this);
+  }
+  return whenAllFetched(null, this);
+};
+
+
+
+PT.fetchOneInsert_fetcher = function (ins, whenReceived) {
+  var tmo = flexiTimeout(whenReceived, {
+    limitSec: (ins.fetcher.fetchTimeoutSec || this.defaultFetchTimeoutSec),
+    name: 'content fetcher for ' + String(ins.tag),
+    errMsg: 'No feedback from \v{name}',
+  });
+  this.log('D', 'fetchOneInsert_fetcher', String(tmo));
+  setImmediate(function fetchOneInsert_proxy() { return ins.fetcher(tmo); });
 };
 
 
@@ -298,7 +332,8 @@ PT.getText = function () {
     case 'string':
       return seg;
     }
-    throw new Error('Segment #' + idx + ': unsupported type: ' + String(seg));
+    throw new Error('Segment #' + idx + ': unsupported segment type: '
+      + CF.describe(seg));
   }).join('');
 };
 
