@@ -52,6 +52,7 @@ CF.oneLineJSONify = function (x) {
 
 CF.identity = function (x) { return x; };
 CF.throwIfTruthy = function (err) { if (err) { throw err; } };
+CF.getAnyObjValue = function (obj) { return obj[Object.keys(obj)[0]]; };
 
 
 CF.normalizeWhitespace = function (text) {
@@ -301,7 +302,8 @@ PT.receiveFetchedSegment = function (whenAllFetched, idx, err, text) {
   }
   delete this.pendingInserts[idx];
   if (Object.keys(this.pendingInserts).length > 0) { return; }
-  if (Object.keys(this.failedInserts).length > 0) {
+  err = (CF.getAnyObjValue(this.failedInserts) || false).err;
+  if (err) {
     err = new Error('Errors in deferred rendering, see .failedInserts.'
       + ' One of them: ' + String(err.message || err));
     err.failedInserts = this.failedInserts;
