@@ -10,7 +10,7 @@ var CF, PT, noOp = Boolean.bind(null, false),
   XmlTag = require('xmlattrdict/xmltag');
 
 
-CF = function ReadmeSSI(opts) {
+CF = function RenderSsiFile(opts) {
   if (!(this instanceof CF)) { return new CF(opts); }
   this.commands = Object.assign({}, PT.commands);
   Object.assign(this, opts);
@@ -279,7 +279,7 @@ PT.prepareFetchOneInsert = function (rcv, idx) {
   how = (this[how] || how);
   this.log('D', 'fetchPendingInserts:prepareTodo', [idx, ins, how]);
   if ((typeof how) === 'function') {
-    proxy = function ReadmeSSI_hasOneInsert(err, tx) { rcv(idx, err, tx); };
+    proxy = function RenderSsiFile_hasOneInsert(er, tx) { rcv(idx, er, tx); };
     return how.bind(this, ins, proxy, idx);
   }
   throw new Error('unsupported insert type: ' + CF.describe(ins));
