@@ -213,7 +213,10 @@ PT.tokenizeMaybeTag = function (buf, seg) {
   }
   if ((typeof tag) === 'string') { tag = new XmlTag(tag); }
   if (tagPrefix) {
-    if (!tag.tagName.startsWith(tagPrefix)) { return buf.eat(); }
+    if (!tag.tagName.startsWith(tagPrefix)) {
+      if (seg) { seg.push(buf.eat()); }
+      return false;
+    }
     tag.cmdName = tag.tagName.slice(tagPrefix.length);
   }
   tag.srcPos = buf.calcPosLnChar();
@@ -225,6 +228,11 @@ PT.tokenizeMaybeTag = function (buf, seg) {
 
 PT.foundTag = function (tag, buf) {
   var val, meta = {};
+  if (!tag) { throw new Error('missing tag'); }
+  if ((typeof tag.origText) !== 'string') {
+    throw new Error('missing tag.origText on tag (' +
+      (typeof tag) + ') "' + tag + '"');
+  }
   val = this.applyCmdFunc('>before', val, tag, buf);
   val = this.applyCmdFunc((tag.cmdName || ('<' + tag.tagName)),
     val, tag, buf, meta);
