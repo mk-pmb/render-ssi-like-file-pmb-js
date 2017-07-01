@@ -6,7 +6,7 @@ var CF, PT, noOp = Boolean.bind(null, false),
   nodeFs = require('fs'), resolveRelativePath = require('path').resolve,
   flexiTimeout = require('callback-timeout-flexible'),
   readFileCached = require('readfile-cache-pmb'),
-  StringPeeks = require('string-peeks'),
+  stringPeeks = require('string-peeks'),
   XmlTag = require('xmlattrdict/xmltag');
 
 
@@ -173,10 +173,10 @@ PT.tokenize = function () {
     tagStart = '<' + (this.commands['>prefix'] || '');
   if (this.checkHasMagicTokens()) { return 'already tokenized'; }
   if (!this.pendingInserts) { this.pendingInserts = {}; }
-  buf = new StringPeeks(this.segments[0]);
+  buf = stringPeeks.fromText(this.segments[0]);
   this.byteOrderMark = buf.byteOrderMark;
   buf.willDrain(function () {
-    while (buf.eatUntilMarkOrEnd(tagStart, seg)) {
+    while (buf.eatUntilMarkOrEnd(tagStart, { collect: seg, eatMark: false })) {
       tag = self.tokenizeMaybeTag(buf, seg);
       if (tag) {
         tag = self.foundTag(tag, buf);
@@ -198,7 +198,7 @@ PT.tokenizeMaybeTag = function (buf, seg) {
   var tag = buf.peekTag(), tagPrefix = this.commands['>prefix'],
     tagSuffix = this.commands['>suffix'];
   if (!tag) {
-    if (seg) { buf.eatUntilMarkOrEnd(1, seg); }
+    if (seg) { buf.eatUntilMarkOrEnd(1, { collect: seg }); }
     // ^--- the invocation without `seg` is a feature for command handlers
     //      to help them invoke other command handlers without modifying
     //      `buf` if their suspect code wasn't a tag.

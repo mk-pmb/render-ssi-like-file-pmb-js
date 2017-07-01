@@ -1,5 +1,5 @@
 { "name": "render-ssi-like-file-pmb",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Replace SSI-style command tags in a text file.",
   "keywords": [],
 
@@ -23,9 +23,9 @@
   },
 
   "dependencies": {
-    "callback-timeout-flexible": "^0.1.0",
+    "callback-timeout-flexible": "^0.1.1",
     "readfile-cache-pmb": "^0.1.2",
-    "string-peeks": "^0.0.4",
+    "string-peeks": "^0.0.9",
     "xmlattrdict": "^0.1.13"
   },
   "devDependencies": {
