@@ -294,6 +294,16 @@ PT.prepareFetchOneInsert = function (rcv, idx) {
 };
 
 
+function wrapError(origErr, intro, extras) {
+  if (!origErr) { return null; }
+  intro = (intro || '');
+  var bettErr = new Error(intro + String(origErr.message || origErr));
+  if (origErr.stack) { bettErr.stack = intro + origErr.stack; }
+  if (extras) { Object.assign(bettErr, extras); }
+  return bettErr;
+}
+
+
 PT.receiveFetchedSegment = function (whenAllFetched, idx, err, text) {
   var fetcher = this.pendingInserts[idx], tag;
   if (!fetcher) {
@@ -310,16 +320,11 @@ PT.receiveFetchedSegment = function (whenAllFetched, idx, err, text) {
   }
   delete this.pendingInserts[idx];
   if (Object.keys(this.pendingInserts).length > 0) { return; }
-  err = (CF.getAnyObjValue(this.failedInserts) || false).err;
-  if (err) {
-    err = new Error('Errors in deferred rendering, see .failedInserts.'
-      + ' One of them: ' + String(err.message || err));
-    err.failedInserts = this.failedInserts;
-    return whenAllFetched(err, this);
-  }
-  return whenAllFetched(null, this);
+  err = wrapError((CF.getAnyObjValue(this.failedInserts) || false).err,
+    'Errors in deferred rendering, see .failedInserts. One of them: ',
+    { failedInserts: this.failedInserts });
+  return whenAllFetched(err, this);
 };
-
 
 
 PT.fetchOneInsert_fetcher = function (ins, whenReceived) {
