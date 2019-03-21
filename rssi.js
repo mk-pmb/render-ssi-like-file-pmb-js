@@ -6,13 +6,29 @@ var CF, PT, noOp = Boolean.bind(null, false),
   nodeFs = require('fs'), resolveRelativePath = require('path').resolve,
   flexiTimeout = require('callback-timeout-flexible'),
   readFileCached = require('readfile-cache-pmb'),
+  makeUniqueIdCounter = require('maxuniqid'),
   stringPeeks = require('string-peeks'),
   XmlTag = require('xmlattrdict/xmltag');
+
+
+function isStr(x, no) { return (((typeof x) === 'string') || no); }
+function ifFun(x, d) { return ((typeof x) === 'function' ? x : d); }
+function typeofIf(x) { return (x && typeof x); }
 
 
 CF = function RenderSsiFile(opts) {
   if (!(this instanceof CF)) { return new CF(opts); }
   this.commands = Object.assign({}, PT.commands);
+  this.nextUniqId = makeUniqueIdCounter();
+  this.segments = null;
+  this.pending = {
+    inserts: {},
+    hooks: {},
+  };
+  this.phase = 'init';
+  this.postFx = [];
+  this.lateFx = [];
+  this.text = '';
   Object.assign(this, opts);
   if (!this.readFile) { this.readFile = readFileCached.rf(); }
 };
@@ -39,8 +55,8 @@ PT.commands = {       // template for the constructor's independent copy
 PT.log = function (level, event, detail) { return [level, event, detail]; };
 
 
-CF.checkMissingCallback = function (func) {
-  if ((typeof func) === 'function') { return; }
+CF.checkMissingCallback = function (f) {
+  if (ifFun(f)) { return; }
   throw new Error('Callback function required');
 };
 
@@ -69,7 +85,7 @@ CF.tagToString = function (tag) {
 
 
 CF.describe = function (x) {
-  var d = (x && typeof x);
+  var d = typeofIf(x);
   switch (d) {
   case '':
   case 'string':
@@ -87,12 +103,18 @@ CF.describe = function (x) {
 };
 
 
+PT.expectPhase = function (want) {
+  var phase = this.phase;
+  if (phase === want) { return; }
+  if (Array.isArray(want) && (want.indexOf(phase) >= 0)) { return; }
+  throw new Error('Wrong render phase ' + phase + ', expected ' + want);
+};
+
+
 PT.setSourceText = function (text) {
-  if (this.checkHasMagicTokens()) {
-    throw new Error('Cannot set source: already tokenized');
-  }
+  this.expectPhase(['init', 'readSourceFile']);
   var normWsp = this.normalizeWhitespace;
-  switch (normWsp && typeof normWsp) {
+  switch (typeofIf(normWsp)) {
   case 'function':
     text = normWsp(text);
     break;
@@ -100,14 +122,16 @@ PT.setSourceText = function (text) {
     text = CF.normalizeWhitespace(text);
     break;
   }
-  this.segments = [text];
+  this.text = text;
   this.log('D', 'setSourceTextOk', [text.slice(0, 128), text.length]);
+  this.phase = 'hasSourceText';
   return this;
 };
 
 
 PT.recvSourceText = function (next, fetchErr, text) {
   this.log('D', 'recvSourceText', [fetchErr, text && text.length]);
+  this.expectPhase('readSourceFile');
   CF.checkMissingCallback(next);
   if (fetchErr) { return next(fetchErr); }
   try {
@@ -116,14 +140,6 @@ PT.recvSourceText = function (next, fetchErr, text) {
     return next(setTextErr);
   }
   return next(null);
-};
-
-
-PT.checkHasMagicTokens = function () {
-  var seg = (this.segments || false);
-  if ((seg.length || 0) < 1) { return false; }
-  if ((seg.length === 1) && ((typeof seg[0]) === 'string')) { return false; }
-  return true;
 };
 
 
@@ -138,32 +154,76 @@ PT.readFileRel = function (relFn, encoding, deliver) {
 };
 
 
+PT.verifyNonePending = function (what) {
+  if (Object.keys(this.pending[what]).length === 0) { return; }
+  throw new Error('Callback flow error! We still have pending ' + what + '.');
+};
+
+
+PT.runNextHook = function (qName, whenHookDone) {
+  this.verifyNonePending('hooks');
+  var self = this, q = this[qName], n = q.length, f = (n ? q.shift() : null);
+  this.log('D', 'runNextHook:checkQ', { qName: qName, qLength: n,
+    nextHookType: typeofIf(f) });
+  if (!n) { return false; }
+  if (!ifFun(f)) {
+    throw new TypeError('Found non-function hook in Q ' + qName);
+  }
+  function g(err) {
+    delete self.pending.hooks[g.id];
+    return whenHookDone(err);
+  }
+  g.id = qName + '$' + this.nextUniqId();
+  self.pending.hooks[g.id] = g;
+  return f(this, g);
+};
+
+
+PT.tryAsync = function (mtdName, args, cb) {
+  var err = null, val;
+  try {
+    val = this[mtdName].apply(this, args);
+  } catch (caught) {
+    err = (caught || ('False-y error: ' + caught));
+  }
+  return cb(err, val);
+};
+
+
 PT.render = function (whenRendered, err) {
-  var retryRender = this.render.bind(this, whenRendered);
+  var phase = this.phase,
+    retryRender = this.render.bind(this, whenRendered);
   CF.checkMissingCallback(whenRendered);
   if (err) { return whenRendered(err); }
-  if (!this.segments) {
-    this.segments = [];     // prevent infinite recursion
-    this.log('D', 'render:segments:init');
+
+  if (phase === 'init') {
     if (this.filename) {
       this.log('D', 'render:segments:readFile');
+      this.phase = 'readSourceFile';
       this.readFile(this.filename, this.encoding,
         this.recvSourceText.bind(this, retryRender));
       return;
     }
+    this.log('D', 'render:segments:init');
   }
-  if (!this.pendingInserts) {
-    try {
-      this.tokenize();
-    } catch (tokenizeErr) {
-      return whenRendered(tokenizeErr, this);
-    }
-    this.fetchPendingInserts(retryRender);
-    return;
+
+  if (!this.segments) {
+    this.verifyNonePending('inserts');
+    return this.tryAsync('tokenize', [], retryRender);
   }
-  if (Object.keys(this.pendingInserts).length) {
-    throw new Error('Cannot render() while there are still pendingInserts!');
+
+  if (phase === 'tokenized') {
+    return this.fetchPendingInserts(retryRender);
   }
+  if (phase === 'fetchedAllInserts') {
+    this.verifyNonePending('inserts');
+    return this.tryAsync('mergeSegments', [], retryRender);
+  }
+
+  this.expectPhase('segmentsMerged');
+  this.verifyNonePending('inserts');
+  if (this.runNextHook('postFx', retryRender)) { return; }
+  if (this.runNextHook('lateFx', retryRender)) { return; }
   return whenRendered(null, this);
 };
 
@@ -171,9 +231,9 @@ PT.render = function (whenRendered, err) {
 PT.tokenize = function () {
   var self = this, buf, seg = [], tag,
     tagStart = '<' + (this.commands['>prefix'] || '');
-  if (this.checkHasMagicTokens()) { return 'already tokenized'; }
-  if (!this.pendingInserts) { this.pendingInserts = {}; }
-  buf = stringPeeks.fromText(this.segments[0]);
+  this.expectPhase(['init', 'hasSourceText']);
+  this.phase = 'tokenizing';
+  buf = stringPeeks.fromText(this.text);
   this.byteOrderMark = buf.byteOrderMark;
   buf.willDrain(function () {
     while (buf.eatUntilMarkOrEnd(tagStart, { collect: seg, eatMark: false })) {
@@ -182,7 +242,7 @@ PT.tokenize = function () {
         tag = self.foundTag(tag, buf);
         switch (tag && (typeof tag) && tag.insertType) {
         case 'fetcher':
-          self.pendingInserts[seg.length] = tag;
+          self.pending.inserts[seg.length] = tag;
           break;
         }
         seg[seg.length] = tag;
@@ -190,6 +250,7 @@ PT.tokenize = function () {
     }
   });
   this.segments = seg;
+  this.phase = 'tokenized';
   return this;
 };
 
@@ -211,7 +272,7 @@ PT.tokenizeMaybeTag = function (buf, seg) {
     }
     tag = tag.slice(0, -tagSuffix.length);
   }
-  if ((typeof tag) === 'string') { tag = new XmlTag(tag); }
+  if (isStr(tag)) { tag = new XmlTag(tag); }
   if (tagPrefix) {
     if (!tag.tagName.startsWith(tagPrefix)) {
       if (seg) { seg.push(buf.eat()); }
@@ -229,7 +290,7 @@ PT.tokenizeMaybeTag = function (buf, seg) {
 PT.foundTag = function (tag, buf) {
   var val, meta = {};
   if (!tag) { throw new Error('missing tag'); }
-  if ((typeof tag.origText) !== 'string') {
+  if (!isStr(tag.origText)) {
     throw new Error('missing tag.origText on tag (' +
       (typeof tag) + ') "' + tag + '"');
   }
@@ -240,7 +301,7 @@ PT.foundTag = function (tag, buf) {
     val = this.applyCmdFunc('>other', val, tag, buf, meta);
   }
   val = this.applyCmdFunc('>after', val, tag, buf);
-  switch (val && typeof val) {
+  switch (typeofIf(val)) {
   case undefined:
   case null:
   case false:
@@ -258,18 +319,27 @@ PT.foundTag = function (tag, buf) {
 
 
 PT.applyCmdFunc = function (func, val, tag, buf, meta) {
-  func = this.commands[func];
-  if ((typeof func) === 'string') { func = (this.cmd[func] || CF[func]); }
-  if ((typeof func) !== 'function') { return val; }
-  if (meta) { meta.func = func; }
-  return func.call(this, val, tag, buf);
+  var hnd = this.commands[func];
+  this.log('D', 'applyCmdFunc:resolve',
+    { func: func, hndType: typeofIf(hnd) });
+  if (isStr(hnd)) { hnd = (this.commands[hnd] || CF[hnd]); }
+  if (!ifFun(hnd)) { return val; }
+  if (meta) { meta.func = hnd; }
+  this.log('D', 'applyCmdFunc:call',
+    { func: func, hndType: typeofIf(hnd) });
+  return hnd.call(this, val, tag, buf);
 };
 
 
 PT.fetchPendingInserts = function (whenAllFetched) {
-  var self = this, todo = Object.keys(self.pendingInserts), recvOneSeg;
+  var self = this, todo = Object.keys(self.pending.inserts), recvOneSeg;
+  this.expectPhase('tokenized');
+  this.phase = 'fetchingInserts';
   if (!self.failedInserts) { self.failedInserts = {}; }
-  if (todo.length < 1) { return whenAllFetched(null, self); }
+  if (todo.length < 1) {
+    this.phase = 'fetchedAllInserts';
+    return whenAllFetched(null, self);
+  }
   recvOneSeg = this.receiveFetchedSegment.bind(this, whenAllFetched);
   try {
     todo = todo.map(this.prepareFetchOneInsert.bind(this, recvOneSeg));
@@ -282,11 +352,11 @@ PT.fetchPendingInserts = function (whenAllFetched) {
 
 
 PT.prepareFetchOneInsert = function (rcv, idx) {
-  var pend = this.pendingInserts, ins = pend[idx],
+  var pend = this.pending.inserts, ins = pend[idx],
     how = 'fetchOneInsert_' + ins.insertType, proxy;
   how = (this[how] || how);
   this.log('D', 'fetchPendingInserts:prepareTodo', [idx, ins, how]);
-  if ((typeof how) === 'function') {
+  if (ifFun(how)) {
     proxy = function RenderSsiFile_hasOneInsert(er, tx) { rcv(idx, er, tx); };
     return how.bind(this, ins, proxy, idx);
   }
@@ -305,7 +375,7 @@ function wrapError(origErr, intro, extras) {
 
 
 PT.receiveFetchedSegment = function (whenAllFetched, idx, err, text) {
-  var fetcher = this.pendingInserts[idx], tag;
+  var fetcher = this.pending.inserts[idx], tag;
   if (!fetcher) {
     this.log('W', 'inserts:received_nonpending', [idx, err, text]);
     return;
@@ -318,8 +388,10 @@ PT.receiveFetchedSegment = function (whenAllFetched, idx, err, text) {
     if (tag.filterFetchedText) { text = tag.filterFetchedText(text); }
     this.segments[idx] = text;
   }
-  delete this.pendingInserts[idx];
-  if (Object.keys(this.pendingInserts).length > 0) { return; }
+  delete this.pending.inserts[idx];
+  this.expectPhase('fetchingInserts');
+  if (Object.keys(this.pending.inserts).length > 0) { return; }
+  this.phase = 'fetchedAllInserts';
   err = wrapError((CF.getAnyObjValue(this.failedInserts) || false).err,
     'Errors in deferred rendering, see .failedInserts. One of them: ',
     { failedInserts: this.failedInserts });
@@ -338,21 +410,28 @@ PT.fetchOneInsert_fetcher = function (ins, whenReceived) {
 };
 
 
-PT.getText = function () {
-  if (!Array.isArray(this.segments)) { throw new Error('not .render()ed'); }
-  var bom = (this.preserveByteOrderMark && this.byteOrderMark);
-  return (bom || '') + this.segments.map(function (seg, idx) {
-    switch (seg && typeof seg) {
-    case '':
-    case 'string':
-      return seg;
-    }
-    throw new Error('Segment #' + idx + ': unsupported segment type: '
-      + CF.describe(seg));
-  }).join('');
+function stringifySegment(seg, idx) {
+  if (isStr(seg)) { return seg; }
+  throw new Error('Segment #' + idx + ': unsupported segment type: '
+    + CF.describe(seg));
+}
+
+
+PT.mergeSegments = function () {
+  this.text = this.segments.map(stringifySegment).join('');
+  this.phase = 'segmentsMerged';
 };
 
 
+PT.getText = function () {
+  var text = this.text;
+  if (text === null) { throw new Error('not .render()ed'); }
+  return text;
+};
+
+PT.getOutputBOM = function () {
+  return ((this.preserveByteOrderMark && this.byteOrderMark) || '');
+};
 
 
 
@@ -369,12 +448,12 @@ PT.getText = function () {
 
 
 PT.saveToFile = function (destFn, whenSaved) {
-  var newText = this.getText();
+  var text = this.getOutputBOM() + this.getText();
   if (destFn === '-') {
-    process.stdout.write(newText);
+    process.stdout.write(text);
     return (whenSaved && whenSaved(null));
   }
-  nodeFs.writeFile(destFn, newText, { encoding: this.encoding }, whenSaved);
+  nodeFs.writeFile(destFn, text, { encoding: this.encoding }, whenSaved);
 };
 
 
@@ -391,13 +470,6 @@ CF.rejectLeftoverAttrs = function (text, tag) {
 
 CF.fromFile = function (srcFn, deliver) {
   var ssiFile = new CF();
-  if (deliver === process) {
-    srcFn = (process.argv[2] || srcFn);
-    deliver = function (err, text) {
-      if (err) { throw err; }
-      console.log(text);
-    };
-  }
   ssiFile.filename = srcFn;
   return ssiFile.render(deliver);
 };

@@ -11,9 +11,17 @@ Replace SSI-style command tags in a text file.
 
 Usage
 -----
+
 The designated usage example for this rendering framework is
 [readme-ssi](https://github.com/mk-pmb/readme-ssi).
 
+
+
+Known issues
+------------
+
+* The callback hell has grown beyond repair, I've given up on proper
+  error tracking. Needs to be rewritten in ES6 with Promises.
 
 
 
